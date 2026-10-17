@@ -75,6 +75,14 @@ def is_admin(user_id: int) -> bool:
 def status_label(status: str) -> str:
     return ORDER_STATUSES.get(status, status)
 
+
+def parse_service_parts(text: str, expected_parts: int):
+    parts = [part.strip() for part in text.split("|")]
+    if len(parts) != expected_parts or any(not part for part in parts):
+        return None
+    return parts
+
+
 class OrderFlow(StatesGroup):
     choosing_service = State()
     choosing_shift = State()
@@ -487,8 +495,8 @@ async def add_service_start(message: Message, state: FSMContext):
 
 @dp.message(AdminFlow.adding_service, F.text)
 async def add_service(message: Message, state: FSMContext):
-    parts = [part.strip() for part in message.text.split("|")]
-    if len(parts) != 4 or not parts[0] or parts[0] in SERVICES:
+    parts = parse_service_parts(message.text, 4)
+    if not parts or parts[0] in SERVICES:
         await message.answer("Invalid format or service ID already exists. Please try again.")
         return
     service_id, name, price, deposit = parts
@@ -518,8 +526,8 @@ async def edit_service_start(message: Message, state: FSMContext):
 
 @dp.message(AdminFlow.editing_service, F.text)
 async def edit_service(message: Message, state: FSMContext):
-    parts = [part.strip() for part in message.text.split("|")]
-    if len(parts) != 3:
+    parts = parse_service_parts(message.text, 3)
+    if not parts:
         await message.answer("Invalid format. Use: `service name | total price | deposit`", parse_mode="Markdown")
         return
     data = await state.get_data()
