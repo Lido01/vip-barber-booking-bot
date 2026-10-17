@@ -2,6 +2,7 @@ import os
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 from dotenv import load_dotenv
@@ -274,6 +275,7 @@ async def submit_booking(msg_obj: Message, state: FSMContext, special_note: str,
         "note": special_note,
         "payment_photo": data["payment_photo"],
         "status": "booked",
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     ORDERS_DB[order_id] = order
     save_data()
@@ -396,6 +398,7 @@ def admin_order_keyboard(order_id: str) -> InlineKeyboardMarkup:
 def order_details(order: dict) -> str:
     return (
         f"🔹 **{order['order_id']}** — {order['customer']}\n"
+        f"🗓 **Created:** {order.get('created_at', 'Unknown')}\n"
         f"✂️ **Service:** {order['service']} ({order['price']})\n"
         f"🕒 **Shift:** {order['shift']}\n"
         f"📞 **Phone:** `{order['phone']}`\n"
