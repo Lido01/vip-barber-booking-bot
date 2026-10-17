@@ -350,6 +350,7 @@ async def check_order_cmd(message: Message):
         "━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"✂️ **Service:** {order['service']} ({order['price']})\n"
         f"🕒 **Shift:** {order['shift']}\n"
+        f"🗓 **Booked:** {order.get('created_at', 'Unknown')}\n"
         f"📝 **Special Note:** {order['note']}\n"
         f"📌 **Status:** **{status_label(order['status'])}**",
         parse_mode="Markdown"
