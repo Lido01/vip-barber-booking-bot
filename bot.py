@@ -101,7 +101,7 @@ async def setup_bot_menu(bot: Bot):
     commands = [
         BotCommand(command="start", description="💈 View Services & Book Appointment"),
         BotCommand(command="myorders", description="📋 Check My Booking Status"),
-        BotCommand(command="allorders", description="🔐 Barber Admin: View Today's Bookings"),
+        BotCommand(command="allorders", description="🔐 Barber Admin: View All Bookings"),
         BotCommand(command="services", description="🔐 Barber Admin: Manage Services"),
         BotCommand(command="adminhelp", description="🔐 Barber Admin: Show Management Help"),
     ]
