@@ -448,7 +448,7 @@ async def update_order_status(callback: CallbackQuery):
         reply_markup=admin_order_keyboard(order_id),
         parse_mode="Markdown",
     )
-    await callback.answer("Customer notified and booking updated.")
+    await callback.answer(f"Status changed to {status_label(new_status)}.")
 
 
 @dp.message(Command("services"))
