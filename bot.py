@@ -453,6 +453,22 @@ async def admin_services(message: Message):
     await message.answer("\n".join(lines), parse_mode="Markdown")
 
 
+@dp.message(Command("adminhelp"))
+async def admin_help(message: Message):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Only the Barber Admin can use this command.")
+        return
+    await message.answer(
+        "🔐 **ADMIN CONTROLS**\n"
+        "• `/allorders` — view every booking and payment screenshot\n"
+        "• `/services` — list services and prices\n"
+        "• `/addservice` — add a service\n"
+        "• `/editservice <id>` — update a service\n"
+        "Use the buttons under each booking to notify the customer of status changes.",
+        parse_mode="Markdown",
+    )
+
+
 @dp.message(Command("addservice"))
 async def add_service_start(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
