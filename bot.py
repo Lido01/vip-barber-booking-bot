@@ -385,7 +385,10 @@ async def barber_view_all(message: Message):
         await message.answer("📭 No bookings received yet today.")
         return
 
-    await message.answer("💈 **ALL CUSTOMER BOOKINGS** 💈", parse_mode="Markdown")
+    await message.answer(
+        f"💈 **ALL CUSTOMER BOOKINGS ({len(ORDERS_DB)})** 💈",
+        parse_mode="Markdown",
+    )
     for order in ORDERS_DB.values():
         await send_admin_order(message.chat.id, order)
 
