@@ -389,7 +389,12 @@ async def barber_view_all(message: Message):
         f"💈 **ALL CUSTOMER BOOKINGS ({len(ORDERS_DB)})** 💈",
         parse_mode="Markdown",
     )
-    for order in ORDERS_DB.values():
+    orders = sorted(
+        ORDERS_DB.values(),
+        key=lambda item: item.get("created_at", ""),
+        reverse=True,
+    )
+    for order in orders:
         await send_admin_order(message.chat.id, order)
 
 
