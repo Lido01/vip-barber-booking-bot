@@ -73,7 +73,7 @@ def is_admin(user_id: int) -> bool:
 
 
 def status_label(status: str) -> str:
-    return ORDER_STATUSES.get(status, status)
+    return ORDER_STATUSES.get(status, f"⚠️ {status}")
 
 
 def parse_service_parts(text: str, expected_parts: int):
