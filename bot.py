@@ -24,6 +24,7 @@ if not BOT_TOKEN or not ADMIN_CHAT_ID:
 ADMIN_CHAT_ID = str(ADMIN_CHAT_ID)
 bot = telebot.TeleBot(BOT_TOKEN)
 user_data = {}
+ACTIVE_ORDER_STATUSES = {"pending", "confirmed", "booked", "in progress"}
 
 
 def connect_sheets():
@@ -400,7 +401,7 @@ def handle_admin_menu(call):
                 orders = orders[-5:]
                 title = "Latest 5 orders"
             elif call.data == "admin_orders_progress":
-                orders = [o for o in orders if order_status(o) in {"pending", "confirmed", "booked", "in progress"}]
+                orders = [o for o in orders if order_status(o) in ACTIVE_ORDER_STATUSES]
                 title = "Orders in progress"
             else:
                 title = "All orders"
