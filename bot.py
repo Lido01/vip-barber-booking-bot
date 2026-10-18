@@ -194,5 +194,119 @@ def handle_admin_action(call):
     except Exception as e:
         print(f"Error executing callback status alteration mapping: {e}")
 
+
+
+# ==========================================
+# ADMIN / MANAGER COMMANDS & INTERFACES
+# ==========================================
+
+@bot.message_handler(commands=['admin'])
+def admin_menu(message):
+    chat_id = str(message.chat.id)
+    
+    # Verify that the person texting the bot is the actual manager
+    if chat_id != str(ADMIN_CHAT_ID):
+        bot.send_message(chat_id, "❌ Access Denied. This command is restricted to the shop manager.")
+        return
+
+    # Build the Manager control console
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(
+        InlineKeyboardButton("📋 View Pending Bookings", callback_data="mgr_view_pending"),
+        InlineKeyboardButton("💰 Today's Revenue Summary", callback_data="mgr_revenue"),
+        InlineKeyboardButton("🔄 Refresh DB Connection", callback_data="mgr_refresh")
+    )
+    
+    bot.send_message(chat_id, "⚙️ **VIP Barber Manager Console**\nSelect a management action below:", reply_markup=keyboard, parse_mode="Markdown")
+
+# Handle All Interactive Buttons (Admin & Manager Actions)
+@bot.callback_query_handler(func=lambda call: call.data.startswith(('approve_', 'deny_', 'mgr_')))
+def handle_callback_actions(call):
+    # 1. Handle Booking Approvals
+    if call.data.startswith(('approve_', 'deny_')):
+        action, row_id, customer_chat_id = call.data.split('_')
+        row_id = int(row_id)
+        
+        try:
+            if action == "approve":
+                bookings_sheet.update_cell(row_id, 10, "Confirmed") # Column 10 (J) is Status
+                status_text = "\n\n🟢 **Status: Confirmed & Approved**"
+                bot.send_message(customer_chat_id, "🎉 Your booking has been **Confirmed**! See you at the shop.")
+            else:
+                bookings_sheet.update_cell(row_id, 10, "Rejected")
+                status_text = "\n\n🔴 **Status: Rejected / Denied**"
+                bot.send_message(customer_chat_id, "❌ Your booking payment could not be verified. Please contact us.")
+
+            # Formats the visual card clean layout
+            if call.message.photo:
+                bot.edit_message_caption(chat_id=ADMIN_CHAT_ID, message_id=call.message.message_id, caption=call.message.caption + status_text, parse_mode="Markdown")
+            else:
+                bot.edit_message_text(chat_id=ADMIN_CHAT_ID, message_id=call.message.message_id, text=call.message.text + status_text, parse_mode="Markdown")
+        except Exception as e:
+            print(f"Callback process failure mapping data: {e}")
+
+    # 2. Manager Function: View All Pending Orders
+    elif call.data == "mgr_view_pending":
+        try:
+            all_records = bookings_sheet.get_all_records()
+            pending_lists = [r for r in all_records if str(r.get('Status')).strip() == "Pending"]
+            
+            if not pending_lists:
+                bot.send_message(ADMIN_CHAT_ID, "✅ **No pending bookings found!** Everything is up to date.")
+                return
+                
+            for p in pending_lists:
+                summary = (
+                    f"📄 **Pending Row ID:** {p.get('Row ID')}\n"
+                    f"👤 **Customer:** {p.get('Customer Name')}\n"
+                    f"📞 **Phone:** {p.get('Phone Number')}\n"
+                    f"💈 **Service:** {p.get('Service Chosen')}\n"
+                    f"💳 **Method:** {p.get('Payment Method')}\n"
+                    f"🕒 **Time:** {p.get('Timestamp')}"
+                )
+                # Add unique control triggers for individual customer rows
+                kb = InlineKeyboardMarkup()
+                kb.row(
+                    InlineKeyboardButton("Approve ✅", callback_data=f"approve_{p.get('Row ID')}_{p.get('Chat ID')}"),
+                    InlineKeyboardButton("Reject ❌", callback_data=f"deny_{p.get('Row ID')}_{p.get('Chat ID')}")
+                )
+                bot.send_message(ADMIN_CHAT_ID, summary, reply_markup=kb, parse_mode="Markdown")
+        except Exception as e:
+            bot.send_message(ADMIN_CHAT_ID, f"⚠️ Failed to scan spreadsheet: {e}")
+
+    # 3. Manager Function: View Revenue Metrics Summary
+    elif call.data == "mgr_revenue":
+        try:
+            all_records = bookings_sheet.get_all_records()
+            confirmed_bookings = [r for r in all_records if str(r.get('Status')).strip() == "Confirmed"]
+            
+            total_revenue = 0
+            for b in confirmed_bookings:
+                # Extract number from format string like "Standard Haircut - 300 ETB"
+                service_string = str(b.get('Service Chosen', '0'))
+                try:
+                    price = int(''.join(filter(str.isdigit, service_string)))
+                    total_revenue += price
+                except:
+                    continue
+            
+            report = (
+                f"📊 **Shop Performance Overview**\n\n"
+                f"🟢 Total Confirmed Bookings: `{len(confirmed_bookings)}` users\n"
+                f"💰 Total Collected Revenue: `{total_revenue} ETB`"
+            )
+            bot.send_message(ADMIN_CHAT_ID, report, parse_mode="Markdown")
+        except Exception as e:
+            bot.send_message(ADMIN_CHAT_ID, f"⚠️ Failed to compute metrics data: {e}")
+
+    # 4. Manager Function: Re-connect client pipelines
+    elif call.data == "mgr_refresh":
+        bot.answer_callback_query(call.id, "🔄 Re-indexing spreadsheet structures...")
+        bot.send_message(ADMIN_CHAT_ID, "✅ Connection pipelines healthy.")
+
+print("🚀 System Active... Press Ctrl+C to terminate terminal script listening loop.")
+bot.infinity_polling()
+
+
 print("🚀 System Active... Press Ctrl+C to terminate terminal script listening loop.")
 bot.infinity_polling()
