@@ -1,312 +1,418 @@
 import os
-import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
-import gspread
+import re
 from datetime import datetime
-from dotenv import load_dotenv
 
-# Load variables safely from local configuration system
+import gspread
+import telebot
+from dotenv import load_dotenv
+from telebot.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+)
+
 load_dotenv()
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") 
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID")
 
 if not BOT_TOKEN or not ADMIN_CHAT_ID:
-    print("❌ ERROR: BOT_TOKEN or ADMIN_CHAT_ID is missing from your .env file!")
-    exit(1)
+    raise RuntimeError("BOT_TOKEN and ADMIN_CHAT_ID must be set in .env")
 
+ADMIN_CHAT_ID = str(ADMIN_CHAT_ID)
 bot = telebot.TeleBot(BOT_TOKEN)
-
-print("⏳ Attempting to bridge secure tunnel to Google API servers...")
-
-try:
-    # Modern direct verification interface bypasses library caching structures
-    client = gspread.service_account(filename="credentials.json")
-    
-    # Open the database structures mapped cleanly inside Google Sheets
-    spreadsheet = client.open("VIP Booking Bot")
-    bookings_sheet = spreadsheet.worksheet("Bookings")
-    services_sheet = spreadsheet.worksheet("Services")
-    payments_sheet = spreadsheet.worksheet("Payment_Methods")
-    print("✅ Successfully connected to Google Sheets!")
-except gspread.exceptions.SpreadsheetNotFound:
-    print("❌ DATABASE ERROR: Could not find a sheet named precisely 'Barbershop_System'.")
-    print("👉 Make sure you shared the sheet with your service account email as an Editor!")
-    exit(1)
-except Exception as e:
-    print(f"❌ CONNECTION INTERCEPTED: Your local internet router or firewall blocked the connection.")
-    print(f"📋 Technical Reason: {e}")
-    print("💡 FIX: Turn off your VPN or connect your PC to your phone's mobile hotspot, then run it again!")
-    exit(1)
-
-# Active state configuration store mapping dictionary
 user_data = {}
 
-@bot.message_handler(commands=['start'])
+
+def connect_sheets():
+    client = gspread.service_account(filename="credentials.json")
+    spreadsheet = client.open("VIP Booking Bot")
+    return (
+        spreadsheet.worksheet("Bookings"),
+        spreadsheet.worksheet("Services"),
+        spreadsheet.worksheet("Payment_Methods"),
+    )
+
+
+try:
+    bookings_sheet, services_sheet, payments_sheet = connect_sheets()
+    print("Successfully connected to Google Sheets.")
+except gspread.exceptions.SpreadsheetNotFound as exc:
+    raise RuntimeError(
+        "Could not find the VIP Booking Bot spreadsheet. "
+        "Share it with the service account and check its name."
+    ) from exc
+except Exception as exc:
+    raise RuntimeError(f"Could not connect to Google Sheets: {exc}") from exc
+
+
+def is_admin(message_or_call):
+    chat_id = (
+        message_or_call.message.chat.id
+        if hasattr(message_or_call, "message")
+        else message_or_call.chat.id
+    )
+    return str(chat_id) == ADMIN_CHAT_ID
+
+
+def remove_keyboard():
+    return ReplyKeyboardRemove()
+
+
+def service_keyboard(services):
+    markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+    for service in services:
+        name = str(service.get("Service Name", "")).strip()
+        price = str(service.get("Price (ETB)", "")).strip()
+        if name:
+            markup.add(KeyboardButton(f"{name} - {price} ETB"))
+    return markup
+
+
+def admin_keyboard():
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(
+        InlineKeyboardButton("All orders", callback_data="admin_orders_all"),
+        InlineKeyboardButton("Latest orders", callback_data="admin_orders_latest"),
+        InlineKeyboardButton("Orders in progress", callback_data="admin_orders_progress"),
+        InlineKeyboardButton("Manage services", callback_data="admin_services"),
+    )
+    return markup
+
+
+def get_order_value(order, *keys):
+    for key in keys:
+        value = order.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def order_status(order):
+    return get_order_value(order, "Status", "status").lower()
+
+
+def order_summary(order):
+    return (
+        f"Order {get_order_value(order, 'Row ID', 'Order ID') or 'unknown'}\n"
+        f"Customer: {get_order_value(order, 'Customer Name', 'Name') or 'unknown'}\n"
+        f"Phone: {get_order_value(order, 'Phone Number', 'Phone') or 'unknown'}\n"
+        f"Address: block {get_order_value(order, 'Block Number') or '-'}, "
+        f"room {get_order_value(order, 'Room Number') or '-'}\n"
+        f"Service: {get_order_value(order, 'Service Chosen', 'Service') or 'unknown'}\n"
+        f"Status: {get_order_value(order, 'Status') or 'unknown'}\n"
+        f"Created: {get_order_value(order, 'Timestamp', 'Created At') or 'unknown'}"
+    )
+
+
+@bot.message_handler(commands=["start"])
 def start_booking(message):
     chat_id = message.chat.id
-    username = f"@{message.from_user.username}" if message.from_user.username else "No Username"
-    
-    user_data[chat_id] = {'username': username}
-    bot.send_message(chat_id, "✂️ Welcome to the Barbershop! Please enter your **Full Name**:")
+    username = f"@{message.from_user.username}" if message.from_user.username else "No username"
+    user_data[chat_id] = {"username": username}
+    bot.send_message(
+        chat_id,
+        "Welcome to VIP Barber Booking.\n\nPlease enter your full name:",
+        reply_markup=remove_keyboard(),
+    )
     bot.register_next_step_handler(message, get_name)
 
+
 def get_name(message):
-    chat_id = message.chat.id
-    if chat_id not in user_data: 
+    if message.chat.id not in user_data:
         return start_booking(message)
-    user_data[chat_id]['name'] = message.text
-    bot.send_message(chat_id, "📞 Please enter your **Phone Number**:")
+    name = (message.text or "").strip()
+    if not name:
+        bot.send_message(message.chat.id, "Please enter a valid full name.")
+        return bot.register_next_step_handler(message, get_name)
+    user_data[message.chat.id]["name"] = name
+    phone_button = KeyboardButton("Share phone number", request_contact=True)
+    markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
+    markup.add(phone_button)
+    bot.send_message(
+        message.chat.id,
+        "Please enter your mobile number using digits only, or tap Share phone number.\n"
+        "Example: +251912345678",
+        reply_markup=markup,
+    )
     bot.register_next_step_handler(message, get_phone)
 
+
+def normalize_phone(message):
+    raw_phone = (
+        message.contact.phone_number
+        if message.content_type == "contact" and message.contact
+        else (message.text or "")
+    ).strip()
+    digits = re.sub(r"[^\d]", "", raw_phone)
+    if digits.startswith("251") and len(digits) == 12 and digits[3] in "79":
+        return f"+{digits}"
+    if digits.startswith("0") and len(digits) == 10 and digits[1] in "79":
+        return f"+251{digits[1:]}"
+    return None
+
+
 def get_phone(message):
-    chat_id = message.chat.id
-    if chat_id not in user_data: 
+    if message.chat.id not in user_data:
         return start_booking(message)
-    user_data[chat_id]['phone'] = message.text
-    
+    if (
+        message.content_type == "contact"
+        and message.contact
+        and message.contact.user_id
+        and message.contact.user_id != message.from_user.id
+    ):
+        bot.send_message(message.chat.id, "Please share your own mobile number.")
+        return bot.register_next_step_handler(message, get_phone)
+    phone = normalize_phone(message)
+    if not phone:
+        bot.send_message(
+            message.chat.id,
+            "That is not a valid Ethiopian mobile number. Please use 09/07XXXXXXXX "
+            "or +2519/+2517XXXXXXXX.",
+        )
+        return bot.register_next_step_handler(message, get_phone)
+    user_data[message.chat.id]["phone"] = phone
+    bot.send_message(
+        message.chat.id,
+        "Enter the block number for your address:",
+        reply_markup=remove_keyboard(),
+    )
+    bot.register_next_step_handler(message, get_block_number)
+
+
+def get_block_number(message):
+    if message.chat.id not in user_data:
+        return start_booking(message)
+    block = (message.text or "").strip()
+    if not re.fullmatch(r"\d{1,10}", block):
+        bot.send_message(message.chat.id, "Please enter a valid block number.")
+        return bot.register_next_step_handler(message, get_block_number)
+    user_data[message.chat.id]["block_number"] = block
+    bot.send_message(message.chat.id, "Enter the room number:")
+    bot.register_next_step_handler(message, get_room_number)
+
+
+def get_room_number(message):
+    if message.chat.id not in user_data:
+        return start_booking(message)
+    room = (message.text or "").strip()
+    if not re.fullmatch(r"\d{1,10}", room):
+        bot.send_message(message.chat.id, "Please enter a valid room number.")
+        return bot.register_next_step_handler(message, get_room_number)
+    user_data[message.chat.id]["room_number"] = room
     try:
         services = services_sheet.get_all_records()
-        markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-        for s in services:
-            markup.add(KeyboardButton(f"{s['Service Name']} - {s['Price (ETB)']} ETB"))
-            
-        bot.send_message(chat_id, "💈 Select the **Service** you want:", reply_markup=markup)
+        if not services:
+            raise RuntimeError("The Services sheet has no services.")
+        bot.send_message(
+            message.chat.id,
+            "Choose a service:",
+            reply_markup=service_keyboard(services),
+        )
         bot.register_next_step_handler(message, get_service)
-    except Exception as e:
-        bot.send_message(chat_id, "⚠️ Error pulling services menu. Please try again later.")
-        print(f"Error reading services: {e}")
+    except Exception as exc:
+        print(f"Error reading services: {exc}")
+        bot.send_message(message.chat.id, "Services are temporarily unavailable. Please try later.")
+
 
 def get_service(message):
-    chat_id = message.chat.id
-    if chat_id not in user_data: 
+    if message.chat.id not in user_data:
         return start_booking(message)
-    user_data[chat_id]['service'] = message.text
-    
+    selected = (message.text or "").strip()
+    try:
+        services = services_sheet.get_all_records()
+        valid_services = {
+            f"{s.get('Service Name', '').strip()} - {str(s.get('Price (ETB)', '')).strip()} ETB"
+            for s in services
+        }
+        if selected not in valid_services:
+            raise ValueError("invalid service")
+    except ValueError:
+        bot.send_message(message.chat.id, "Please choose a service using one of the buttons.")
+        return bot.register_next_step_handler(message, get_service)
+    except Exception as exc:
+        print(f"Error validating service: {exc}")
+        bot.send_message(message.chat.id, "Services are temporarily unavailable. Please try later.")
+        return
+    user_data[message.chat.id]["service"] = selected
     try:
         methods = payments_sheet.get_all_records()
-        pay_instructions = "💵 **Available Payment Methods:**\n\n"
+        if not methods:
+            raise RuntimeError("The Payment_Methods sheet has no methods.")
         markup = ReplyKeyboardMarkup(one_time_keyboard=True, resize_keyboard=True)
-        
-        for m in methods:
-            pay_instructions += f"🔹 **{m['Provider Name']}**\nAcc: `{m['Account Number']}`\nName: {m['Account Name']}\n\n"
-            markup.add(KeyboardButton(m['Provider Name']))
-            
-        bot.send_message(chat_id, pay_instructions, parse_mode="Markdown")
-        bot.send_message(chat_id, "Please select the **Payment Method** you used:", reply_markup=markup)
+        instructions = ["Available payment methods:\n"]
+        for method in methods:
+            provider = str(method.get("Provider Name", "")).strip()
+            instructions.append(
+                f"{provider}\nAccount: {method.get('Account Number', '')}\n"
+                f"Account name: {method.get('Account Name', '')}\n"
+            )
+            markup.add(KeyboardButton(provider))
+        bot.send_message(message.chat.id, "\n".join(instructions))
+        bot.send_message(message.chat.id, "Choose the payment method:", reply_markup=markup)
         bot.register_next_step_handler(message, get_payment_method)
-    except Exception as e:
-        bot.send_message(chat_id, "⚠️ Error pulling payment methods. Please try again.")
-        print(f"Error reading payment methods: {e}")
+    except Exception as exc:
+        print(f"Error reading payment methods: {exc}")
+        bot.send_message(message.chat.id, "Payment methods are temporarily unavailable. Please try later.")
+
 
 def get_payment_method(message):
-    chat_id = message.chat.id
-    if chat_id not in user_data: 
+    if message.chat.id not in user_data:
         return start_booking(message)
-    user_data[chat_id]['payment_method'] = message.text
-    
-    markup = telebot.types.ReplyKeyboardRemove()
-    bot.send_message(chat_id, "📸 Please send a **Screenshot** of the payment OR type the **Transaction Number**:", reply_markup=markup)
+    selected = (message.text or "").strip()
+    try:
+        methods = payments_sheet.get_all_records()
+        providers = {str(method.get("Provider Name", "")).strip() for method in methods}
+        if selected not in providers:
+            raise ValueError("invalid payment method")
+    except ValueError:
+        bot.send_message(message.chat.id, "Please choose a payment method using the buttons.")
+        return bot.register_next_step_handler(message, get_payment_method)
+    except Exception as exc:
+        print(f"Error validating payment method: {exc}")
+        bot.send_message(message.chat.id, "Payment methods are temporarily unavailable. Please try later.")
+        return
+    user_data[message.chat.id]["payment_method"] = selected
+    bot.send_message(
+        message.chat.id,
+        "Send a payment screenshot, or type the transaction number:",
+        reply_markup=remove_keyboard(),
+    )
     bot.register_next_step_handler(message, get_payment_proof)
 
-def get_payment_proof(message):
-    chat_id = message.chat.id
-    if chat_id not in user_data: 
-        return start_booking(message)
-    data = user_data[chat_id]
-    
-    if message.content_type == 'photo':
-        data['proof'] = message.photo[-1].file_id
-        data['is_photo'] = True
-    else:
-        data['proof'] = message.text
-        data['is_photo'] = False
-        
-    bot.send_message(chat_id, "✍️ Add any **Optional Notes** (e.g., preferred barber, specific time) or type 'None':")
-    bot.register_next_step_handler(message, get_optional_note)
 
-def get_optional_note(message):
-    chat_id = message.chat.id
-    if chat_id not in user_data: 
+def get_payment_proof(message):
+    if message.chat.id not in user_data:
         return start_booking(message)
-    data = user_data[chat_id]
-    data['note'] = message.text if message.text.lower() != 'none' else ""
-    
+    data = user_data[message.chat.id]
+    if message.content_type == "photo":
+        data["proof"] = message.photo[-1].file_id
+        data["is_photo"] = True
+    else:
+        proof = (message.text or "").strip()
+        if not proof:
+            bot.send_message(message.chat.id, "Please send a screenshot or transaction number.")
+            return bot.register_next_step_handler(message, get_payment_proof)
+        data["proof"] = proof
+        data["is_photo"] = False
+    bot.send_message(message.chat.id, "Optional note, or type None:")
+    bot.register_next_step_handler(message, finish_booking)
+
+
+def finish_booking(message):
+    chat_id = message.chat.id
+    if chat_id not in user_data:
+        return start_booking(message)
+    data = user_data.pop(chat_id)
+    note = (message.text or "").strip()
+    note = "" if note.lower() == "none" else note
     try:
-        all_rows = bookings_sheet.get_all_values()
-        next_row = len(all_rows) + 1
+        row_id = len(bookings_sheet.get_all_values()) + 1
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        row_data = [
-            next_row, data['username'], chat_id, data['name'], data['phone'], 
-            data['service'], data['payment_method'], data['proof'] if not data['is_photo'] else "Photo Sent", 
-            data['note'], "Pending", timestamp
-        ]
-        bookings_sheet.append_row(row_data)
-        
-        bot.send_message(chat_id, "🙌 Thank you! Your booking details have been submitted. Waiting for admin confirmation.")
-        
+        bookings_sheet.append_row(
+            [
+                row_id,
+                data["username"],
+                chat_id,
+                data["name"],
+                data["phone"],
+                data["service"],
+                data["payment_method"],
+                data["proof"] if not data["is_photo"] else "Photo Sent",
+                note,
+                "Pending",
+                timestamp,
+                data["block_number"],
+                data["room_number"],
+            ]
+        )
+        bot.send_message(
+            chat_id,
+            "Your booking was submitted successfully. We will send an update after review.",
+        )
         keyboard = InlineKeyboardMarkup()
         keyboard.row(
-            InlineKeyboardButton("Confirm ✅", callback_data=f"approve_{next_row}_{chat_id}"),
-            InlineKeyboardButton("Reject ❌", callback_data=f"deny_{next_row}_{chat_id}")
+            InlineKeyboardButton("Confirm", callback_data=f"approve_{row_id}_{chat_id}"),
+            InlineKeyboardButton("Reject", callback_data=f"deny_{row_id}_{chat_id}"),
         )
-        
-        admin_msg = (
-            f"🔔 **New Booking Request!** (Row {next_row})\n\n"
-            f"👤 **Name:** {data['name']}\n"
-            f"💬 **Telegram:** {data['username']}\n"
-            f"📞 **Phone:** {data['phone']}\n"
-            f"💈 **Service:** {data['service']}\n"
-            f"💳 **Method:** {data['payment_method']}\n"
-            f"📝 **Note:** {data['note'] if data['note'] else 'None'}"
+        admin_text = (
+            f"New booking (order {row_id})\n\n"
+            f"Name: {data['name']}\nTelegram: {data['username']}\nPhone: {data['phone']}\n"
+            f"Address: block {data['block_number']}, room {data['room_number']}\n"
+            f"Service: {data['service']}\nPayment: {data['payment_method']}\n"
+            f"Note: {note or 'None'}"
         )
-        
-        if data['is_photo']:
-            bot.send_photo(ADMIN_CHAT_ID, data['proof'], caption=admin_msg, reply_markup=keyboard, parse_mode="Markdown")
+        if data["is_photo"]:
+            bot.send_photo(ADMIN_CHAT_ID, data["proof"], caption=admin_text, reply_markup=keyboard)
         else:
-            admin_msg += f"\n🔢 **Txn Details:** {data['proof']}"
-            bot.send_message(ADMIN_CHAT_ID, admin_msg, reply_markup=keyboard, parse_mode="Markdown")
-            
-    except Exception as e:
-        bot.send_message(chat_id, "⚠️ System experienced a database write error. Please message us directly.")
-        print(f"Error appending booking row data: {e}")
-
-@bot.callback_query_handler(func=lambda call: call.data.startswith(('approve_', 'deny_')))
-def handle_admin_action(call):
-    action, row_id, customer_chat_id = call.data.split('_')
-    row_id = int(row_id)
-    
-    try:
-        if action == "approve":
-            bookings_sheet.update_cell(row_id, 10, "Confirmed")
-            status_text = "\n\n🟢 **Status: Confirmed & Approved**"
-            bot.send_message(customer_chat_id, "🎉 Your booking has been **Confirmed**! See you at the shop.")
-        else:
-            bookings_sheet.update_cell(row_id, 10, "Rejected")
-            status_text = "\n\n🔴 **Status: Rejected / Denied**"
-            bot.send_message(customer_chat_id, "❌ Your booking payment could not be verified. Please contact us.")
-
-        if call.message.photo:
-            bot.edit_message_caption(chat_id=ADMIN_CHAT_ID, message_id=call.message.message_id, caption=call.message.caption + status_text, parse_mode="Markdown")
-        else:
-            bot.edit_message_text(chat_id=ADMIN_CHAT_ID, message_id=call.message.message_id, text=call.message.text + status_text, parse_mode="Markdown")
-    except Exception as e:
-        print(f"Error executing callback status alteration mapping: {e}")
+            bot.send_message(ADMIN_CHAT_ID, f"{admin_text}\nTransaction: {data['proof']}", reply_markup=keyboard)
+    except Exception as exc:
+        print(f"Error saving booking: {exc}")
+        bot.send_message(chat_id, "We could not save your booking. Please try again later.")
 
 
-
-# ==========================================
-# ADMIN / MANAGER COMMANDS & INTERFACES
-# ==========================================
-
-@bot.message_handler(commands=['admin'])
+@bot.message_handler(commands=["admin"])
 def admin_menu(message):
-    chat_id = str(message.chat.id)
-    
-    # Verify that the person texting the bot is the actual manager
-    if chat_id != str(ADMIN_CHAT_ID):
-        bot.send_message(chat_id, "❌ Access Denied. This command is restricted to the shop manager.")
+    if not is_admin(message):
+        bot.send_message(message.chat.id, "Access denied.")
         return
+    bot.send_message(message.chat.id, "Admin order and service management:", reply_markup=admin_keyboard())
 
-    # Build the Manager control console
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    keyboard.add(
-        InlineKeyboardButton("📋 View Pending Bookings", callback_data="mgr_view_pending"),
-        InlineKeyboardButton("💰 Today's Revenue Summary", callback_data="mgr_revenue"),
-        InlineKeyboardButton("🔄 Refresh DB Connection", callback_data="mgr_refresh")
-    )
-    
-    bot.send_message(chat_id, "⚙️ **VIP Barber Manager Console**\nSelect a management action below:", reply_markup=keyboard, parse_mode="Markdown")
 
-# Handle All Interactive Buttons (Admin & Manager Actions)
-@bot.callback_query_handler(func=lambda call: call.data.startswith(('approve_', 'deny_', 'mgr_')))
-def handle_callback_actions(call):
-    # 1. Handle Booking Approvals
-    if call.data.startswith(('approve_', 'deny_')):
-        action, row_id, customer_chat_id = call.data.split('_')
-        row_id = int(row_id)
-        
-        try:
-            if action == "approve":
-                bookings_sheet.update_cell(row_id, 10, "Confirmed") # Column 10 (J) is Status
-                status_text = "\n\n🟢 **Status: Confirmed & Approved**"
-                bot.send_message(customer_chat_id, "🎉 Your booking has been **Confirmed**! See you at the shop.")
+@bot.callback_query_handler(func=lambda call: call.data.startswith(("approve_", "deny_")))
+def handle_booking_decision(call):
+    if not is_admin(call):
+        bot.answer_callback_query(call.id, "Access denied.")
+        return
+    action, row_id, customer_chat_id = call.data.split("_")
+    status = "Confirmed" if action == "approve" else "Rejected"
+    try:
+        bookings_sheet.update_cell(int(row_id), 10, status)
+        if status == "Confirmed":
+            bot.send_message(customer_chat_id, "Your booking is confirmed.")
+        else:
+            bot.send_message(customer_chat_id, "Your booking was rejected. Please contact the shop.")
+        bot.answer_callback_query(call.id, f"Order {status.lower()}.")
+        bot.edit_message_reply_markup(ADMIN_CHAT_ID, call.message.message_id, reply_markup=None)
+    except Exception as exc:
+        print(f"Error updating booking status: {exc}")
+        bot.answer_callback_query(call.id, "Could not update this order.")
+
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("admin_"))
+def handle_admin_menu(call):
+    if not is_admin(call):
+        bot.answer_callback_query(call.id, "Access denied.")
+        return
+    try:
+        if call.data == "admin_services":
+            services = services_sheet.get_all_records()
+            text = "\n".join(
+                f"- {s.get('Service Name', 'Unnamed')}: {s.get('Price (ETB)', '-')} ETB"
+                for s in services
+            ) or "No services configured."
+            bot.send_message(ADMIN_CHAT_ID, f"Services\n\n{text}")
+        else:
+            orders = bookings_sheet.get_all_records()
+            if call.data == "admin_orders_latest":
+                orders = orders[-5:]
+                title = "Latest 5 orders"
+            elif call.data == "admin_orders_progress":
+                orders = [o for o in orders if order_status(o) in {"pending", "confirmed", "booked", "in progress"}]
+                title = "Orders in progress"
             else:
-                bookings_sheet.update_cell(row_id, 10, "Rejected")
-                status_text = "\n\n🔴 **Status: Rejected / Denied**"
-                bot.send_message(customer_chat_id, "❌ Your booking payment could not be verified. Please contact us.")
-
-            # Formats the visual card clean layout
-            if call.message.photo:
-                bot.edit_message_caption(chat_id=ADMIN_CHAT_ID, message_id=call.message.message_id, caption=call.message.caption + status_text, parse_mode="Markdown")
+                title = "All orders"
+            if not orders:
+                bot.send_message(ADMIN_CHAT_ID, f"{title}\n\nNo orders found.")
             else:
-                bot.edit_message_text(chat_id=ADMIN_CHAT_ID, message_id=call.message.message_id, text=call.message.text + status_text, parse_mode="Markdown")
-        except Exception as e:
-            print(f"Callback process failure mapping data: {e}")
-
-    # 2. Manager Function: View All Pending Orders
-    elif call.data == "mgr_view_pending":
-        try:
-            all_records = bookings_sheet.get_all_records()
-            pending_lists = [r for r in all_records if str(r.get('Status')).strip() == "Pending"]
-            
-            if not pending_lists:
-                bot.send_message(ADMIN_CHAT_ID, "✅ **No pending bookings found!** Everything is up to date.")
-                return
-                
-            for p in pending_lists:
-                summary = (
-                    f"📄 **Pending Row ID:** {p.get('Row ID')}\n"
-                    f"👤 **Customer:** {p.get('Customer Name')}\n"
-                    f"📞 **Phone:** {p.get('Phone Number')}\n"
-                    f"💈 **Service:** {p.get('Service Chosen')}\n"
-                    f"💳 **Method:** {p.get('Payment Method')}\n"
-                    f"🕒 **Time:** {p.get('Timestamp')}"
-                )
-                # Add unique control triggers for individual customer rows
-                kb = InlineKeyboardMarkup()
-                kb.row(
-                    InlineKeyboardButton("Approve ✅", callback_data=f"approve_{p.get('Row ID')}_{p.get('Chat ID')}"),
-                    InlineKeyboardButton("Reject ❌", callback_data=f"deny_{p.get('Row ID')}_{p.get('Chat ID')}")
-                )
-                bot.send_message(ADMIN_CHAT_ID, summary, reply_markup=kb, parse_mode="Markdown")
-        except Exception as e:
-            bot.send_message(ADMIN_CHAT_ID, f"⚠️ Failed to scan spreadsheet: {e}")
-
-    # 3. Manager Function: View Revenue Metrics Summary
-    elif call.data == "mgr_revenue":
-        try:
-            all_records = bookings_sheet.get_all_records()
-            confirmed_bookings = [r for r in all_records if str(r.get('Status')).strip() == "Confirmed"]
-            
-            total_revenue = 0
-            for b in confirmed_bookings:
-                # Extract number from format string like "Standard Haircut - 300 ETB"
-                service_string = str(b.get('Service Chosen', '0'))
-                try:
-                    price = int(''.join(filter(str.isdigit, service_string)))
-                    total_revenue += price
-                except:
-                    continue
-            
-            report = (
-                f"📊 **Shop Performance Overview**\n\n"
-                f"🟢 Total Confirmed Bookings: `{len(confirmed_bookings)}` users\n"
-                f"💰 Total Collected Revenue: `{total_revenue} ETB`"
-            )
-            bot.send_message(ADMIN_CHAT_ID, report, parse_mode="Markdown")
-        except Exception as e:
-            bot.send_message(ADMIN_CHAT_ID, f"⚠️ Failed to compute metrics data: {e}")
-
-    # 4. Manager Function: Re-connect client pipelines
-    elif call.data == "mgr_refresh":
-        bot.answer_callback_query(call.id, "🔄 Re-indexing spreadsheet structures...")
-        bot.send_message(ADMIN_CHAT_ID, "✅ Connection pipelines healthy.")
-
-print("🚀 System Active... Press Ctrl+C to terminate terminal script listening loop.")
-bot.infinity_polling()
+                bot.send_message(ADMIN_CHAT_ID, f"{title}\n\n" + "\n\n".join(order_summary(o) for o in orders))
+        bot.answer_callback_query(call.id)
+    except Exception as exc:
+        print(f"Error loading admin data: {exc}")
+        bot.answer_callback_query(call.id, "Could not load the requested data.")
 
 
-print("🚀 System Active... Press Ctrl+C to terminate terminal script listening loop.")
+print("System active.")
 bot.infinity_polling()
