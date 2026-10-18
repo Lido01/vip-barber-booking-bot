@@ -8,7 +8,7 @@ Customers start a booking with `/start` and are guided through one clean flow:
 1. Full name.
 2. Ethiopian mobile number (`09...`, `07...`, `+2519...`, or `+2517...`), entered as
    digits or shared from Telegram.
-3. Numeric block number and room number.
+3. Numeric block number and numeric room number.
 4. A service loaded from the `Services` sheet.
 5. A payment method and payment screenshot or transaction number.
 6. An optional note.
