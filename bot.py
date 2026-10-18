@@ -331,7 +331,8 @@ def finish_booking(message):
         )
         bot.send_message(
             chat_id,
-            "Your booking was submitted successfully. We will send an update after review.",
+            f"Your booking was submitted successfully.\nOrder reference: {row_id}\n"
+            "We will send an update after review.",
         )
         keyboard = InlineKeyboardMarkup()
         keyboard.row(
