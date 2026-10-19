@@ -50,6 +50,20 @@ def handle_start_or_menu(message):
     first_name = html_text(message.from_user.first_name)
     send_main_menu(chat_id, f"👋 Hello {first_name}! Welcome to the <b>VIP Barber Shop</b>.")
 
+@bot.message_handler(commands=['admin'])
+def handle_admin_panel(message):
+    chat_id = str(message.chat.id)
+    if chat_id != str(ADMIN_CHAT_ID):
+        bot.send_message(chat_id, "❌ Restricted entry portal.")
+        return
+
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(
+        InlineKeyboardButton("⏳ View Pending Bookings", callback_data="adm_list_pending"),
+        InlineKeyboardButton("📋 View All Bookings (Latest)", callback_data="adm_list_all")
+    )
+    bot.send_message(chat_id, "⚡ <b>VIP Barber Shop Manager Dashboard</b>\nSelect a tool path below:", reply_markup=keyboard, parse_mode="HTML")
+
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_navigation(message):
     chat_id = message.chat.id
@@ -95,8 +109,11 @@ def handle_menu_navigation(message):
             for idx, r in enumerate(my_records, 1):
                 name = html_text(r.get('Customer Name'))
                 address = html_text(r.get('Address'))
+                status = html_text(r.get('Status'))
                 timestamp = html_text(r.get('Timestamp'))
-                report += f"{idx}. 👤 <b>Name:</b> {name} | 📍 {address}\n🕒 Booked on: <i>{timestamp}</i>\n\n"
+                
+                status_icon = "🟡" if status == "Pending" else "🟢" if status == "Confirmed" else "🔴"
+                report += f"{idx}. 👤 <b>Name:</b> {name}\n📍 <b>Address:</b> {address}\n{status_icon} <b>Status:</b> {status}\n🕒 Booked on: <i>{timestamp}</i>\n\n"
             bot.send_message(chat_id, report, parse_mode="HTML")
         except Exception as e:
             bot.send_message(chat_id, "⚠️ Failed to look up your booking information.")
@@ -111,23 +128,31 @@ def get_name(message):
     if chat_id not in user_data: return handle_start_or_menu(message)
     
     user_data[chat_id]['name'] = message.text.strip()
-    bot.send_message(chat_id, "📞 Enter your <b>Mobile Phone Number</b> (Digits only, e.g., 0912345678):", parse_mode="HTML")
+    
+    # Create Native Share Contact button layout along with clear manual entry options
+    phone_markup = ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True)
+    phone_markup.add(KeyboardButton("📱 Share My Phone Number", request_contact=True))
+    
+    bot.send_message(chat_id, "📞 Please share your phone using the button below or type it manually (digits only):", reply_markup=phone_markup, parse_mode="HTML")
     bot.register_next_step_handler(message, get_phone)
 
 def get_phone(message):
     chat_id = message.chat.id
     if chat_id not in user_data: return handle_start_or_menu(message)
     
-    raw_phone = message.text.strip().replace(" ", "").replace("+", "")
+    # Detect if user clicked the native contact share button or typed text manually
+    if message.contact is not None:
+        raw_phone = message.contact.phone_number.strip().replace(" ", "").replace("+", "")
+    else:
+        raw_phone = message.text.strip().replace(" ", "").replace("+", "")
     
-    # Validation engine to prevent text string injections
-    if not raw_phone.isdigit() or len(raw_phone) < 9 or len(raw_phone) > 13:
-        bot.send_message(chat_id, "⚠️ <b>Invalid phone entry!</b> Please type only digits (no spaces or letters):", parse_mode="HTML")
+    if not raw_phone.isdigit() or len(raw_phone) < 9 or len(raw_phone) > 15:
+        bot.send_message(chat_id, "⚠️ <b>Invalid phone entry!</b> Please type only digits or press the Share Contact button:", parse_mode="HTML")
         bot.register_next_step_handler(message, get_phone)
         return
         
     user_data[chat_id]['phone'] = raw_phone
-    bot.send_message(chat_id, "🏢 Enter your <b>Block Number / Building Name</b>:", parse_mode="HTML")
+    bot.send_message(chat_id, "🏢 Enter your <b>Block Number / Building Name</b>:", reply_markup=ReplyKeyboardRemove(), parse_mode="HTML")
     bot.register_next_step_handler(message, get_block)
 
 def get_block(message):
@@ -143,7 +168,7 @@ def get_room(message):
     if chat_id not in user_data: return handle_start_or_menu(message)
     
     user_data[chat_id]['room'] = message.text.strip()
-    bot.send_message(chat_id, "✍️ Enter any <b>Optional Notes</b> (Preferred date, time, or barber) or type 'None':", parse_mode="HTML")
+    bot.send_message(chat_id, "✍️ Enter any <b>Optional Notes</b> (Preferred date/time) or type 'None':", parse_mode="HTML")
     bot.register_next_step_handler(message, get_optional_note)
 
 def get_optional_note(message):
@@ -159,30 +184,34 @@ def get_optional_note(message):
         next_row = len(all_rows) + 1
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Save exact row footprint matching database columns A through H
         row_data = [
             next_row, data['username'], chat_id, data['name'], 
-            data['phone'], full_address, data['note'], timestamp
+            data['phone'], full_address, data['note'], "Pending", timestamp
         ]
         bookings_sheet.append_row(row_data)
         
-        # Clean up session memory cache arrays safely before rendering menu
         del user_data[chat_id]
         
-        # Alert the Customer and re-render persistent menu paths
         bot.send_message(chat_id, "✅ <b>Booking Submitted Successfully!</b>\nYour appointment is logged. Please pay in person at the shop after your cut.", parse_mode="HTML")
         send_main_menu(chat_id)
         
-        # FIX: Explicitly map key values into flat string arrays to guarantee valid Markdown components
+        # Build interactive actions panel for real-time manager handling
+        keyboard = InlineKeyboardMarkup()
+        keyboard.row(
+            InlineKeyboardButton("Confirm ✅", callback_data=f"approve_{next_row}_{chat_id}"),
+            InlineKeyboardButton("Reject ❌", callback_data=f"deny_{next_row}_{chat_id}")
+        )
+        
         admin_msg = (
             f"🔔 <b>New Appointment Booked!</b> (Row {next_row})\n\n"
             f"👤 <b>Name:</b> {html_text(data['name'])}\n"
-            f"📞 <b>Phone:</b> {html_text(data['phone'])}\n"
+            f"💬 <b>Telegram:</b> {html_text(data['username'])}\n"
+            f"📞 <b>Phone:</b> <code>{html_text(data['phone'])}</code>\n"
             f"📍 <b>Location:</b> {html_text(full_address)}\n"
             f"📝 <b>Notes:</b> {html_text(data['note'] if data['note'] else 'None')}\n"
             f"🕒 <b>Time:</b> {html_text(timestamp)}"
         )
-        bot.send_message(ADMIN_CHAT_ID, admin_msg, parse_mode="HTML")
+        bot.send_message(ADMIN_CHAT_ID, admin_msg, reply_markup=keyboard, parse_mode="HTML")
         
     except Exception as e:
         bot.send_message(chat_id, "⚠️ Database write error occurred. Please try again.")
@@ -190,28 +219,4 @@ def get_optional_note(message):
         send_main_menu(chat_id)
 
 # ==========================================
-# ADMIN DIAGNOSTIC CONSOLE
-# ==========================================
-
-@bot.message_handler(commands=['admin'])
-def admin_summary(message):
-    chat_id = str(message.chat.id)
-    if chat_id != str(ADMIN_CHAT_ID):
-        bot.send_message(chat_id, "❌ Restricted entry portal.")
-        return
-        
-    try:
-        all_rows = bookings_sheet.get_all_values()
-        total_bookings = len(all_rows) - 1 if len(all_rows) > 1 else 0
-        
-        summary = (
-            f"📊 <b>VIP Barber Shop Manager Report</b>\n\n"
-            f"💇‍♂️ Total Registered Appointments: <code>{total_bookings}</code> bookings\n"
-            f"💡 <i>All customer data is saved directly in your Google Sheet workbook.</i>"
-        )
-        bot.send_message(ADMIN_CHAT_ID, summary, parse_mode="HTML")
-    except Exception as e:
-        bot.send_message(ADMIN_CHAT_ID, f"⚠️ Error mapping summary fields: {e}")
-
-print("🚀 System Active... Press Ctrl+C to terminate terminal script listening loop.")
-bot.infinity_polling()
+# CALLBACK ROUTINES (ADMIN CONTROLS)
