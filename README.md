@@ -165,6 +165,19 @@ On startup the bot registers its Telegram commands, connects to Google Sheets,
 and starts polling. Keep the process running for the bot to respond. Stop it
 with `Ctrl+C`.
 
+## Operational checklist
+
+Before inviting customers:
+
+- Send `/start` from a customer account and complete a test booking.
+- Confirm the new row appears with `Pending` status.
+- Open `/admin`, check **Pending bookings**, and test both Confirm and Reject
+  on separate test rows.
+- Confirm the customer receives the matching status notification.
+- Open **Manage services** and verify that the public services menu reflects
+  the configured catalog.
+- Check the process output for startup and Google Sheets errors.
+
 ## Error handling and access control
 
 - Missing environment variables stop startup with an explicit error.
