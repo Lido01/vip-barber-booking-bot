@@ -21,14 +21,29 @@ after an admin approves or rejects it.
 The admin sends `/admin` from the chat configured by `ADMIN_CHAT_ID`. The menu
 provides buttons for:
 
-- **All orders**: review every saved booking.
-- **Latest orders**: review the five newest bookings.
-- **Orders in progress**: review pending, confirmed, booked, and in-progress bookings.
-- **Manage services**: view the current service names and prices from the `Services` sheet.
+- **All bookings**: review every saved booking, including customer name, phone,
+  Telegram chat ID, address, status, and timestamp. Results are paginated.
+- **Pending bookings**: review only bookings that still need action.
+- **Manage services**: view services and add or edit service name, price, and duration.
 
 New orders also arrive directly in the admin chat with **Confirm** and **Reject**
-buttons. There is one callback handler and one polling loop, so old duplicate
-buttons and shortcuts are not shown.
+buttons. Confirmed bookings remain in the sheet. Rejected bookings are removed
+from the sheet and the customer receives a rejection notification. There is one
+callback handler and one polling loop, so old duplicate buttons and shortcuts
+are not shown.
+
+Customers can use `/start` or `/menu` to book, view only their own bookings,
+and view available services. The admin dashboard is restricted to
+`ADMIN_CHAT_ID`; customers cannot access the all-bookings or service-management
+views.
+The customer menu also includes **Help / Contact Support**, which opens a direct
+Telegram chat with the configured administrator. `/help` opens the same support
+option.
+
+The configured admin also sees an **Admin Dashboard** button in the normal menu.
+It opens the all-bookings and pending-bookings lists, while regular customers
+only see their own bookings. The **Quick Menu** button provides shortcuts to
+booking, private bookings, services, support, and (for the admin) the dashboard.
 
 ## Google Sheets columns
 
@@ -38,6 +53,12 @@ The existing booking columns are preserved. New bookings append:
 - `Room Number`
 
 Add those two headers to the `Bookings` sheet if they are not already present.
+The booking row also expects a `Status` column for Pending, Confirmed, and
+Rejected updates. The `Services` sheet must have these headers:
+
+- `Service Name`
+- `Price (ETB)`
+- `Duration`
 
 ## Configuration
 

@@ -1,4 +1,5 @@
 import os
+import re
 from html import escape
 import telebot
 from telebot.types import (
@@ -165,8 +166,22 @@ def send_main_menu(chat_id, text="🏠 <b>VIP Barber Shop Main Menu</b>\nSelect 
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row(KeyboardButton("💇‍♂️ Book a Haircut Now"))
     markup.row(KeyboardButton("📅 View My Bookings"), KeyboardButton("💈 Our Services & Prices"))
-    markup.row(KeyboardButton("🆘 Help / Contact Support"))
+    markup.row(KeyboardButton("⚡ Quick Menu"), KeyboardButton("🆘 Help / Contact Support"))
+    if is_admin(chat_id):
+        markup.row(KeyboardButton("🛠️ Admin Dashboard"))
     bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
+
+def send_quick_menu(chat_id):
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton("💇‍♂️ Book", callback_data="quick_book"),
+        InlineKeyboardButton("📅 My bookings", callback_data="quick_my_bookings"),
+        InlineKeyboardButton("💈 Services", callback_data="quick_services"),
+        InlineKeyboardButton("🆘 Support", callback_data="quick_support"),
+    )
+    if is_admin(chat_id):
+        keyboard.add(InlineKeyboardButton("🛠️ Admin dashboard", callback_data="adm_dashboard"))
+    bot.send_message(chat_id, "⚡ <b>Quick Menu</b>\nChoose an option:", reply_markup=keyboard, parse_mode="HTML")
 
 def clear_old_menu(chat_id):
     bot.send_message(chat_id, "Menu refreshed.", reply_markup=ReplyKeyboardRemove())
@@ -264,6 +279,15 @@ def handle_menu_navigation(message):
     elif text == "🆘 Help / Contact Support":
         send_support_menu(chat_id)
 
+    elif text == "⚡ Quick Menu":
+        send_quick_menu(chat_id)
+
+    elif text == "🛠️ Admin Dashboard":
+        if is_admin(chat_id):
+            send_admin_dashboard(chat_id)
+        else:
+            bot.send_message(chat_id, "This option is available only to the administrator.")
+
     else:
         bot.send_message(
             chat_id,
@@ -317,12 +341,13 @@ def get_block(message):
     chat_id = message.chat.id
     if chat_id not in user_data: return handle_start_or_menu(message)
     
-    if not message.text or not message.text.strip():
-        bot.send_message(chat_id, "Please enter your block number or building name.")
+    block = (message.text or "").strip()
+    if not re.fullmatch(r"[0-9]+", block):
+        bot.send_message(chat_id, "Please enter the block number using whole digits only, for example: 12.")
         bot.register_next_step_handler(message, get_block)
         return
 
-    user_data[chat_id]['block'] = message.text.strip()
+    user_data[chat_id]['block'] = int(block)
     bot.send_message(chat_id, "🚪 Enter your <b>Room Number / Office Number</b>:", parse_mode="HTML")
     bot.register_next_step_handler(message, get_room)
 
@@ -330,12 +355,13 @@ def get_room(message):
     chat_id = message.chat.id
     if chat_id not in user_data: return handle_start_or_menu(message)
     
-    if not message.text or not message.text.strip():
-        bot.send_message(chat_id, "Please enter your room or office number.")
+    room = (message.text or "").strip()
+    if not re.fullmatch(r"[0-9]+", room):
+        bot.send_message(chat_id, "Please enter the room number using whole digits only, for example: 204.")
         bot.register_next_step_handler(message, get_room)
         return
 
-    user_data[chat_id]['room'] = message.text.strip()
+    user_data[chat_id]['room'] = int(room)
     bot.send_message(chat_id, "✍️ Enter any <b>Optional Notes</b> (Preferred date/time) or type 'None':", parse_mode="HTML")
     bot.register_next_step_handler(message, get_optional_note)
 
@@ -463,6 +489,64 @@ def handle_admin_navigation(call):
     except Exception as e:
         bot.answer_callback_query(call.id, "Could not open that admin action.", show_alert=True)
         print(f"Admin navigation error: {e}", flush=True)
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith("quick_"))
+def handle_quick_menu(call):
+    if call.data == "quick_book":
+        bot.answer_callback_query(call.id)
+        username = f"@{call.from_user.username}" if call.from_user.username else "No Username"
+        user_data[call.message.chat.id] = {"username": username}
+        bot.send_message(
+            call.message.chat.id,
+            "✍️ Please enter your <b>Full Name</b>:",
+            reply_markup=ReplyKeyboardRemove(),
+            parse_mode="HTML",
+        )
+        bot.register_next_step_handler(call.message, get_name)
+    elif call.data == "quick_my_bookings":
+        bot.answer_callback_query(call.id)
+        show_customer_bookings(call.message.chat.id)
+    elif call.data == "quick_services":
+        bot.answer_callback_query(call.id)
+        show_services(call.message.chat.id)
+    elif call.data == "quick_support":
+        bot.answer_callback_query(call.id)
+        send_support_menu(call.message.chat.id)
+
+def show_services(chat_id):
+    try:
+        services = services_sheet.get_all_records()
+        msg = "⚡ <b>What We Do (Pay in Person After Service):</b>\n\n"
+        for service in services:
+            msg += (
+                f"🔹 <b>{html_text(service.get('Service Name'))}</b>\n"
+                f"💰 Price: <code>{html_text(service.get('Price (ETB)'))} ETB</code> | "
+                f"⏳ Duration: {html_text(service.get('Duration'))}\n\n"
+            )
+        bot.send_message(chat_id, msg, parse_mode="HTML")
+    except Exception as e:
+        bot.send_message(chat_id, "⚠️ Services are temporarily unavailable.")
+        print(f"Error reading services: {e}", flush=True)
+
+def show_customer_bookings(chat_id):
+    try:
+        records = [r for r in get_booking_records() if str(r.get("Chat ID")) == str(chat_id)]
+        if not records:
+            bot.send_message(chat_id, "ℹ️ You have no bookings yet.")
+            return
+        report = "📅 <b>Your bookings</b>\n\n"
+        for record in records:
+            status = record.get("Status", "Pending")
+            report += (
+                f"👤 <b>{html_text(record.get('Customer Name'))}</b>\n"
+                f"📍 {html_text(record.get('Address'))}\n"
+                f"{booking_status_icon(status)} <b>{html_text(status)}</b>\n"
+                f"🕒 {html_text(record.get('Timestamp'))}\n\n"
+            )
+        bot.send_message(chat_id, report, parse_mode="HTML")
+    except Exception as e:
+        bot.send_message(chat_id, "⚠️ Your bookings are temporarily unavailable.")
+        print(f"Customer booking lookup error: {e}", flush=True)
 
 def get_service_name(message):
     if not is_admin(message.chat.id) or message.chat.id not in admin_data:
