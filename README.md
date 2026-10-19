@@ -68,6 +68,20 @@ not lose saved records.
 | `Confirmed` | The admin accepted the booking. |
 | `Rejected` | The admin declined the booking; the row remains available for history. |
 
+## Admin decision workflow
+
+When the admin opens **Pending bookings**, each pending row includes its own
+Confirm and Reject buttons. The same buttons are attached to the new-booking
+alert sent to the admin. Selecting either action:
+
+1. Verifies that the callback came from the configured admin chat.
+2. Updates the row's `Status` cell in Google Sheets.
+3. Removes the buttons from the alert that was used.
+4. Sends the new status to the customer's Telegram chat.
+
+The list is paginated, and the row number is included in each callback so the
+admin can process a request without opening the spreadsheet.
+
 ## Google Sheets setup
 
 Create a spreadsheet named **VIP Booking Bot** with these worksheets:
