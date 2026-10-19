@@ -7,25 +7,26 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 # Load environment configuration variables
-load_dotenv()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID") 
 
 if not BOT_TOKEN or not ADMIN_CHAT_ID:
-    print("❌ ERROR: BOT_TOKEN or ADMIN_CHAT_ID is missing from your .env file!")
+    print("ERROR: BOT_TOKEN or ADMIN_CHAT_ID is missing from your .env file!", flush=True)
     exit(1)
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
 try:
-    client = gspread.service_account(filename="credentials.json")
+    client = gspread.service_account(filename=os.path.join(BASE_DIR, "credentials.json"))
     spreadsheet = client.open("VIP Booking Bot")
     bookings_sheet = spreadsheet.worksheet("Bookings")
     services_sheet = spreadsheet.worksheet("Services")
-    print("✅ Successfully connected to Google Sheets!")
+    print("Successfully connected to Google Sheets!", flush=True)
 except Exception as e:
-    print(f"❌ DATABASE ERROR: Could not connect. Reason: {e}")
+    print(f"DATABASE ERROR: Could not connect. Reason: {e}", flush=True)
     exit(1)
 
 # Active state configuration store session dictionaries
@@ -220,3 +221,41 @@ def get_optional_note(message):
 
 # ==========================================
 # CALLBACK ROUTINES (ADMIN CONTROLS)
+# ==========================================
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith(("approve_", "deny_")))
+def handle_booking_decision(call):
+    if str(call.message.chat.id) != str(ADMIN_CHAT_ID):
+        bot.answer_callback_query(call.id, "Restricted action.", show_alert=True)
+        return
+
+    action, row_number, customer_chat_id = call.data.split("_", 2)
+    status = "Confirmed" if action == "approve" else "Rejected"
+
+    try:
+        headers = bookings_sheet.row_values(1)
+        if "Status" not in headers:
+            raise ValueError("The Bookings sheet must contain a 'Status' column.")
+
+        status_column = headers.index("Status") + 1
+        bookings_sheet.update_cell(int(row_number), status_column, status)
+
+        bot.answer_callback_query(call.id, f"Booking {status.lower()}.")
+        bot.edit_message_reply_markup(
+            call.message.chat.id,
+            call.message.message_id,
+            reply_markup=None,
+        )
+        bot.send_message(
+            customer_chat_id,
+            f"📣 Your booking status is now: <b>{status}</b>.",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        bot.answer_callback_query(call.id, "Could not update booking.", show_alert=True)
+        print(f"Error updating booking status: {e}", flush=True)
+
+
+if __name__ == "__main__":
+    print("System Active. Press Ctrl+C to terminate the polling loop.", flush=True)
+    bot.infinity_polling()
