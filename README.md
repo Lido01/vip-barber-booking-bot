@@ -40,6 +40,21 @@ Booking decisions update the existing row's `Status` value to `Confirmed` or
 `Rejected`; rejected bookings are retained instead of being deleted. The
 customer receives a Telegram notification after either decision.
 
+## Customer booking flow
+
+The booking conversation is intentionally step-based. After the customer
+selects **Book a Haircut Now**, the bot asks for:
+
+1. Full name.
+2. Phone number, either as digits or as a shared Telegram contact.
+3. Numeric block number.
+4. Numeric room or office number.
+5. Optional notes, such as a preferred date or time.
+
+The bot validates the phone, block, and room values before writing the request.
+After the row is saved, the customer receives a submission confirmation and the
+admin receives a formatted alert containing the request details.
+
 ## How it works
 
 The application is a single Python polling process:
