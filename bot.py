@@ -1,7 +1,14 @@
 import os
 from html import escape
 import telebot
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from telebot.types import (
+    BotCommand,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardRemove,
+)
 import gspread
 from datetime import datetime
 from dotenv import load_dotenv
@@ -19,6 +26,15 @@ if not BOT_TOKEN or not ADMIN_CHAT_ID:
 
 bot = telebot.TeleBot(BOT_TOKEN)
 
+def configure_bot_commands():
+    bot.set_my_commands([
+        BotCommand("start", "Open the customer menu"),
+        BotCommand("menu", "Show the customer menu"),
+        BotCommand("help", "Get help and contact support"),
+        BotCommand("reset", "Clear the old menu and start again"),
+        BotCommand("admin", "Open the admin dashboard"),
+    ])
+
 try:
     client = gspread.service_account(filename=os.path.join(BASE_DIR, "credentials.json"))
     spreadsheet = client.open("VIP Booking Bot")
@@ -31,9 +47,115 @@ except Exception as e:
 
 # Active state configuration store session dictionaries
 user_data = {}
+admin_data = {}
+ADMIN_PAGE_SIZE = 8
 
 def html_text(value):
     return escape(str(value or ""))
+
+def is_admin(chat_id):
+    return str(chat_id) == str(ADMIN_CHAT_ID)
+
+def admin_dashboard_markup():
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    keyboard.add(
+        InlineKeyboardButton("📋 All bookings", callback_data="adm_bookings_all_0"),
+        InlineKeyboardButton("⏳ Pending bookings", callback_data="adm_bookings_pending_0"),
+        InlineKeyboardButton("💈 Manage services", callback_data="adm_services"),
+    )
+    return keyboard
+
+def send_admin_dashboard(chat_id):
+    bot.send_message(
+        chat_id,
+        "⚡ <b>VIP Barber Shop Manager Dashboard</b>\nChoose an action:",
+        reply_markup=admin_dashboard_markup(),
+        parse_mode="HTML",
+    )
+
+def booking_status_icon(status):
+    return {"Pending": "🟡", "Confirmed": "🟢", "Rejected": "🔴"}.get(status, "⚪")
+
+def get_booking_records():
+    rows = bookings_sheet.get_all_values()
+    if not rows:
+        return []
+    headers = rows[0]
+    records = []
+    for row_number, row in enumerate(rows[1:], 2):
+        record = dict(zip(headers, row))
+        record["_row_number"] = row_number
+        records.append(record)
+    return records
+
+def send_admin_bookings(chat_id, status_filter=None, page=0):
+    records = get_booking_records()
+    if status_filter:
+        records = [r for r in records if r.get("Status", "Pending") == status_filter]
+    records.reverse()
+
+    start = page * ADMIN_PAGE_SIZE
+    page_records = records[start:start + ADMIN_PAGE_SIZE]
+    title = "All bookings" if not status_filter else f"{status_filter} bookings"
+    if not page_records:
+        bot.send_message(chat_id, f"ℹ️ No {title.lower()} found.", reply_markup=admin_dashboard_markup())
+        return
+
+    lines = [f"📋 <b>{title}</b> ({len(records)} total)\n"]
+    for record in page_records:
+        row_number = record["_row_number"]
+        status = record.get("Status", "Pending")
+        lines.append(
+            f"<b>#{row_number}</b> {booking_status_icon(status)} <b>{html_text(record.get('Customer Name'))}</b>\n"
+            f"📞 {html_text(record.get('Phone'))} | 💬 {html_text(record.get('Telegram') or record.get('Username'))}\n"
+            f"📍 {html_text(record.get('Address'))}\n"
+            f"🕒 {html_text(record.get('Timestamp'))}\n"
+            f"🆔 Customer chat: <code>{html_text(record.get('Chat ID'))}</code>\n"
+        )
+
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    navigation = []
+    if page > 0:
+        navigation.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"adm_bookings_{status_filter or 'all'}_{page - 1}"))
+    if start + ADMIN_PAGE_SIZE < len(records):
+        navigation.append(InlineKeyboardButton("Next ➡️", callback_data=f"adm_bookings_{status_filter or 'all'}_{page + 1}"))
+    if navigation:
+        keyboard.row(*navigation)
+    keyboard.add(InlineKeyboardButton("⬅️ Dashboard", callback_data="adm_dashboard"))
+    bot.send_message(chat_id, "\n".join(lines), reply_markup=keyboard, parse_mode="HTML")
+
+def service_headers():
+    headers = services_sheet.row_values(1)
+    required = ["Service Name", "Price (ETB)", "Duration"]
+    if not headers:
+        services_sheet.append_row(required)
+        return required
+    missing = [header for header in required if header not in headers]
+    if missing:
+        raise ValueError(f"Services sheet is missing columns: {', '.join(missing)}")
+    return headers
+
+def send_services_admin(chat_id):
+    headers = service_headers()
+    rows = services_sheet.get_all_records()
+    keyboard = InlineKeyboardMarkup(row_width=1)
+    for offset, service in enumerate(rows, 2):
+        name = service.get("Service Name", "Unnamed service")
+        price = service.get("Price (ETB)", "")
+        duration = service.get("Duration", "")
+        keyboard.add(InlineKeyboardButton(
+            f"✏️ {str(name)[:30]} ({price} ETB)",
+            callback_data=f"svc_edit_{offset}",
+        ))
+    keyboard.add(InlineKeyboardButton("➕ Add service", callback_data="svc_add"))
+    keyboard.add(InlineKeyboardButton("⬅️ Dashboard", callback_data="adm_dashboard"))
+    text = "💈 <b>Service management</b>\n\n"
+    if rows:
+        for service in rows:
+            text += f"🔹 <b>{html_text(service.get('Service Name'))}</b> — {html_text(service.get('Price (ETB)'))} ETB, {html_text(service.get('Duration'))}\n"
+    else:
+        text += "No services have been added yet.\n"
+    bot.send_message(chat_id, text, reply_markup=keyboard, parse_mode="HTML")
 
 # ==========================================
 # INTERACTIVE MAIN MENU KEYBOARD SYSTEM
@@ -43,27 +165,46 @@ def send_main_menu(chat_id, text="🏠 <b>VIP Barber Shop Main Menu</b>\nSelect 
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
     markup.row(KeyboardButton("💇‍♂️ Book a Haircut Now"))
     markup.row(KeyboardButton("📅 View My Bookings"), KeyboardButton("💈 Our Services & Prices"))
+    markup.row(KeyboardButton("🆘 Help / Contact Support"))
     bot.send_message(chat_id, text, reply_markup=markup, parse_mode="HTML")
+
+def clear_old_menu(chat_id):
+    bot.send_message(chat_id, "Menu refreshed.", reply_markup=ReplyKeyboardRemove())
 
 @bot.message_handler(commands=['start', 'menu'])
 def handle_start_or_menu(message):
     chat_id = message.chat.id
     first_name = html_text(message.from_user.first_name)
+    clear_old_menu(chat_id)
     send_main_menu(chat_id, f"👋 Hello {first_name}! Welcome to the <b>VIP Barber Shop</b>.")
+
+@bot.message_handler(commands=['reset'])
+def handle_reset(message):
+    clear_old_menu(message.chat.id)
+    first_name = html_text(message.from_user.first_name)
+    send_main_menu(message.chat.id, f"👋 Hello {first_name}! Welcome to the <b>VIP Barber Shop</b>.")
+
+@bot.message_handler(commands=['help'])
+def handle_help(message):
+    send_support_menu(message.chat.id)
+
+def send_support_menu(chat_id):
+    keyboard = InlineKeyboardMarkup()
+    keyboard.add(InlineKeyboardButton("💬 Contact the administrator", url=f"tg://user?id={ADMIN_CHAT_ID}"))
+    bot.send_message(
+        chat_id,
+        "🆘 <b>Support</b>\n\nFor help with a booking, contact the administrator directly.",
+        reply_markup=keyboard,
+        parse_mode="HTML",
+    )
 
 @bot.message_handler(commands=['admin'])
 def handle_admin_panel(message):
     chat_id = str(message.chat.id)
-    if chat_id != str(ADMIN_CHAT_ID):
+    if not is_admin(chat_id):
         bot.send_message(chat_id, "❌ Restricted entry portal.")
         return
-
-    keyboard = InlineKeyboardMarkup(row_width=1)
-    keyboard.add(
-        InlineKeyboardButton("⏳ View Pending Bookings", callback_data="adm_list_pending"),
-        InlineKeyboardButton("📋 View All Bookings (Latest)", callback_data="adm_list_all")
-    )
-    bot.send_message(chat_id, "⚡ <b>VIP Barber Shop Manager Dashboard</b>\nSelect a tool path below:", reply_markup=keyboard, parse_mode="HTML")
+    send_admin_dashboard(chat_id)
 
 @bot.message_handler(func=lambda msg: True)
 def handle_menu_navigation(message):
@@ -110,7 +251,7 @@ def handle_menu_navigation(message):
             for idx, r in enumerate(my_records, 1):
                 name = html_text(r.get('Customer Name'))
                 address = html_text(r.get('Address'))
-                status = html_text(r.get('Status'))
+                status = r.get('Status', 'Pending')
                 timestamp = html_text(r.get('Timestamp'))
                 
                 status_icon = "🟡" if status == "Pending" else "🟢" if status == "Confirmed" else "🔴"
@@ -120,6 +261,17 @@ def handle_menu_navigation(message):
             bot.send_message(chat_id, "⚠️ Failed to look up your booking information.")
             print(f"User database lookup failure: {e}")
 
+    elif text == "🆘 Help / Contact Support":
+        send_support_menu(chat_id)
+
+    else:
+        bot.send_message(
+            chat_id,
+            "I did not recognize that option. Please choose one of the menu buttons below.",
+            reply_markup=None,
+        )
+        send_main_menu(chat_id)
+
 # ==========================================
 # CUSTOMER DATA COLLECTION PROCESS
 # ==========================================
@@ -128,6 +280,11 @@ def get_name(message):
     chat_id = message.chat.id
     if chat_id not in user_data: return handle_start_or_menu(message)
     
+    if not message.text or not message.text.strip():
+        bot.send_message(chat_id, "Please enter your full name as text.")
+        bot.register_next_step_handler(message, get_name)
+        return
+
     user_data[chat_id]['name'] = message.text.strip()
     
     # Create Native Share Contact button layout along with clear manual entry options
@@ -145,7 +302,7 @@ def get_phone(message):
     if message.contact is not None:
         raw_phone = message.contact.phone_number.strip().replace(" ", "").replace("+", "")
     else:
-        raw_phone = message.text.strip().replace(" ", "").replace("+", "")
+        raw_phone = (message.text or "").strip().replace(" ", "").replace("+", "")
     
     if not raw_phone.isdigit() or len(raw_phone) < 9 or len(raw_phone) > 15:
         bot.send_message(chat_id, "⚠️ <b>Invalid phone entry!</b> Please type only digits or press the Share Contact button:", parse_mode="HTML")
@@ -160,6 +317,11 @@ def get_block(message):
     chat_id = message.chat.id
     if chat_id not in user_data: return handle_start_or_menu(message)
     
+    if not message.text or not message.text.strip():
+        bot.send_message(chat_id, "Please enter your block number or building name.")
+        bot.register_next_step_handler(message, get_block)
+        return
+
     user_data[chat_id]['block'] = message.text.strip()
     bot.send_message(chat_id, "🚪 Enter your <b>Room Number / Office Number</b>:", parse_mode="HTML")
     bot.register_next_step_handler(message, get_room)
@@ -168,6 +330,11 @@ def get_room(message):
     chat_id = message.chat.id
     if chat_id not in user_data: return handle_start_or_menu(message)
     
+    if not message.text or not message.text.strip():
+        bot.send_message(chat_id, "Please enter your room or office number.")
+        bot.register_next_step_handler(message, get_room)
+        return
+
     user_data[chat_id]['room'] = message.text.strip()
     bot.send_message(chat_id, "✍️ Enter any <b>Optional Notes</b> (Preferred date/time) or type 'None':", parse_mode="HTML")
     bot.register_next_step_handler(message, get_optional_note)
@@ -193,7 +360,7 @@ def get_optional_note(message):
         
         del user_data[chat_id]
         
-        bot.send_message(chat_id, "✅ <b>Booking Submitted Successfully!</b>\nYour appointment is logged. Please pay in person at the shop after your cut.", parse_mode="HTML")
+        bot.send_message(chat_id, "✅ <b>Booking Submitted Successfully!</b>\nYour appointment is logged. We will contact you shortly.", parse_mode="HTML")
         send_main_menu(chat_id)
         
         # Build interactive actions panel for real-time manager handling
@@ -230,17 +397,27 @@ def handle_booking_decision(call):
         return
 
     action, row_number, customer_chat_id = call.data.split("_", 2)
-    status = "Confirmed" if action == "approve" else "Rejected"
 
     try:
         headers = bookings_sheet.row_values(1)
         if "Status" not in headers:
             raise ValueError("The Bookings sheet must contain a 'Status' column.")
 
-        status_column = headers.index("Status") + 1
-        bookings_sheet.update_cell(int(row_number), status_column, status)
+        row_number = int(row_number)
+        if action == "deny":
+            bookings_sheet.delete_rows(row_number)
+            customer_message = (
+                "📣 <b>Your booking was not accepted.</b>\n"
+                "The request has been removed. Please contact support if you need help."
+            )
+            callback_message = "Booking rejected and removed."
+        else:
+            status_column = headers.index("Status") + 1
+            bookings_sheet.update_cell(row_number, status_column, "Confirmed")
+            customer_message = "📣 Your booking status is now: <b>Confirmed</b>."
+            callback_message = "Booking confirmed."
 
-        bot.answer_callback_query(call.id, f"Booking {status.lower()}.")
+        bot.answer_callback_query(call.id, callback_message)
         bot.edit_message_reply_markup(
             call.message.chat.id,
             call.message.message_id,
@@ -248,14 +425,84 @@ def handle_booking_decision(call):
         )
         bot.send_message(
             customer_chat_id,
-            f"📣 Your booking status is now: <b>{status}</b>.",
+            customer_message,
             parse_mode="HTML",
         )
     except Exception as e:
         bot.answer_callback_query(call.id, "Could not update booking.", show_alert=True)
         print(f"Error updating booking status: {e}", flush=True)
 
+@bot.callback_query_handler(func=lambda call: call.data.startswith(("adm_", "svc_")))
+def handle_admin_navigation(call):
+    if not is_admin(call.message.chat.id):
+        bot.answer_callback_query(call.id, "Restricted action.", show_alert=True)
+        return
+
+    try:
+        parts = call.data.split("_")
+        if call.data == "adm_dashboard":
+            bot.answer_callback_query(call.id)
+            send_admin_dashboard(call.message.chat.id)
+        elif parts[0:2] == ["adm", "bookings"]:
+            status_filter = None if parts[2] == "all" else parts[2].title()
+            bot.answer_callback_query(call.id)
+            send_admin_bookings(call.message.chat.id, status_filter, int(parts[3]))
+        elif call.data == "adm_services":
+            bot.answer_callback_query(call.id)
+            send_services_admin(call.message.chat.id)
+        elif call.data == "svc_add":
+            admin_data[call.message.chat.id] = {"mode": "add"}
+            bot.answer_callback_query(call.id)
+            bot.send_message(call.message.chat.id, "Enter the new service name:")
+            bot.register_next_step_handler(call.message, get_service_name)
+        elif parts[0:2] == ["svc", "edit"]:
+            admin_data[call.message.chat.id] = {"mode": "edit", "row": int(parts[2])}
+            bot.answer_callback_query(call.id)
+            bot.send_message(call.message.chat.id, "Enter the new service name:")
+            bot.register_next_step_handler(call.message, get_service_name)
+    except Exception as e:
+        bot.answer_callback_query(call.id, "Could not open that admin action.", show_alert=True)
+        print(f"Admin navigation error: {e}", flush=True)
+
+def get_service_name(message):
+    if not is_admin(message.chat.id) or message.chat.id not in admin_data:
+        return
+    admin_data[message.chat.id]["name"] = message.text.strip()
+    bot.send_message(message.chat.id, "Enter the price (numbers or text such as 250 ETB):")
+    bot.register_next_step_handler(message, get_service_price)
+
+def get_service_price(message):
+    if not is_admin(message.chat.id) or message.chat.id not in admin_data:
+        return
+    admin_data[message.chat.id]["price"] = message.text.strip()
+    bot.send_message(message.chat.id, "Enter the duration (for example, 30 minutes):")
+    bot.register_next_step_handler(message, get_service_duration)
+
+def get_service_duration(message):
+    if not is_admin(message.chat.id) or message.chat.id not in admin_data:
+        return
+    data = admin_data.pop(message.chat.id)
+    try:
+        headers = service_headers()
+        values = [data["name"], data["price"], message.text.strip()]
+        if data["mode"] == "add":
+            services_sheet.append_row(values)
+            result = "Service added successfully."
+        else:
+            row_number = data["row"]
+            for header, value in zip(("Service Name", "Price (ETB)", "Duration"), values):
+                services_sheet.update_cell(row_number, headers.index(header) + 1, value)
+            result = "Service updated successfully."
+        bot.send_message(message.chat.id, f"✅ {result}", reply_markup=admin_dashboard_markup())
+    except Exception as e:
+        bot.send_message(message.chat.id, "⚠️ Could not save the service. Check the Services sheet headers.")
+        print(f"Service management error: {e}", flush=True)
+
 
 if __name__ == "__main__":
+    try:
+        configure_bot_commands()
+    except Exception as e:
+        print(f"WARNING: Could not update Telegram command menu: {e}", flush=True)
     print("System Active. Press Ctrl+C to terminate the polling loop.", flush=True)
     bot.infinity_polling()
