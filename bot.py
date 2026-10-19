@@ -77,6 +77,20 @@ def send_admin_dashboard(chat_id):
 def booking_status_icon(status):
     return {"Pending": "🟡", "Confirmed": "🟢", "Rejected": "🔴"}.get(status, "⚪")
 
+def booking_action_markup(row_number, customer_chat_id):
+    keyboard = InlineKeyboardMarkup(row_width=2)
+    keyboard.add(
+        InlineKeyboardButton(
+            "Confirm ✅",
+            callback_data=f"approve_{row_number}_{customer_chat_id}",
+        ),
+        InlineKeyboardButton(
+            "Reject ❌",
+            callback_data=f"deny_{row_number}_{customer_chat_id}",
+        ),
+    )
+    return keyboard
+
 def get_booking_records():
     rows = bookings_sheet.get_all_values()
     if not rows:
@@ -115,6 +129,18 @@ def send_admin_bookings(chat_id, status_filter=None, page=0):
         )
 
     keyboard = InlineKeyboardMarkup(row_width=2)
+    for record in page_records:
+        if record.get("Status", "Pending") == "Pending":
+            keyboard.add(
+                InlineKeyboardButton(
+                    f"Confirm #{record['_row_number']} ✅",
+                    callback_data=f"approve_{record['_row_number']}_{record.get('Chat ID', '')}",
+                ),
+                InlineKeyboardButton(
+                    f"Reject #{record['_row_number']} ❌",
+                    callback_data=f"deny_{record['_row_number']}_{record.get('Chat ID', '')}",
+                ),
+            )
     navigation = []
     if page > 0:
         navigation.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"adm_bookings_{status_filter or 'all'}_{page - 1}"))
@@ -390,11 +416,7 @@ def get_optional_note(message):
         send_main_menu(chat_id)
         
         # Build interactive actions panel for real-time manager handling
-        keyboard = InlineKeyboardMarkup()
-        keyboard.row(
-            InlineKeyboardButton("Confirm ✅", callback_data=f"approve_{next_row}_{chat_id}"),
-            InlineKeyboardButton("Reject ❌", callback_data=f"deny_{next_row}_{chat_id}")
-        )
+        keyboard = booking_action_markup(next_row, chat_id)
         
         admin_msg = (
             f"🔔 <b>New Appointment Booked!</b> (Row {next_row})\n\n"
@@ -430,18 +452,11 @@ def handle_booking_decision(call):
             raise ValueError("The Bookings sheet must contain a 'Status' column.")
 
         row_number = int(row_number)
-        if action == "deny":
-            bookings_sheet.delete_rows(row_number)
-            customer_message = (
-                "📣 <b>Your booking was not accepted.</b>\n"
-                "The request has been removed. Please contact support if you need help."
-            )
-            callback_message = "Booking rejected and removed."
-        else:
-            status_column = headers.index("Status") + 1
-            bookings_sheet.update_cell(row_number, status_column, "Confirmed")
-            customer_message = "📣 Your booking status is now: <b>Confirmed</b>."
-            callback_message = "Booking confirmed."
+        status_column = headers.index("Status") + 1
+        new_status = "Rejected" if action == "deny" else "Confirmed"
+        bookings_sheet.update_cell(row_number, status_column, new_status)
+        customer_message = f"📣 Your booking status is now: <b>{new_status}</b>."
+        callback_message = f"Booking {new_status.lower()}."
 
         bot.answer_callback_query(call.id, callback_message)
         bot.edit_message_reply_markup(
