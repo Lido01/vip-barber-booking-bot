@@ -190,6 +190,18 @@ Before inviting customers:
 - Customer-provided text is HTML-escaped before it is placed in Telegram HTML
   messages.
 
+## Troubleshooting
+
+- **Startup says configuration is missing:** check that `.env` is beside
+  `bot.py` and that both variable names are spelled exactly as shown above.
+- **Google Sheets connection fails:** verify the spreadsheet title, worksheet
+  names, service-account sharing permission, and the location of
+  `credentials.json`.
+- **Admin buttons are restricted:** use the numeric Telegram chat ID of the
+  administrator in `ADMIN_CHAT_ID`; a username is not accepted.
+- **A booking is not visible:** confirm that the sheet's first row contains
+  the expected headers and that the customer completed the full conversation.
+
 ## Project layout
 
 ```text
